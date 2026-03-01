@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && 
+             request.auth.token.email.matches('.*@kiit\\.ac\\.in$') &&
+             request.auth.token.role == 'admin';
+    }
+    
+    // Helper function to check if user is the participant
+    function isOwner(rollNo) {
+      return request.auth != null && 
+             request.auth.token.rollNo == rollNo;
+    }
+    
+    // Helper function for general authenticated access (must be KIIT domain)
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token.email.matches('.*@kiit\\.ac\\.in$');
+    }
+
+    // Admins Collection
+    match /admins/{adminEmail} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Users Collection (Participants)
+    match /users/{rollNo} {
+      allow read: if isAdmin() || isOwner(rollNo);
+      allow write: if isAdmin();
+    }
+
+    // Scores Collection
+    match /scores/{date} {
+      allow read: if isAdmin() || isAuthenticated(); 
+      allow write: if isAdmin();
+
+      match /participants/{rollNo} {
+        allow read: if isAdmin() || isOwner(rollNo);
+        allow write: if isAdmin();
+      }
+    }
+    
+    // Programs Collection
+    match /programs/{programId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
