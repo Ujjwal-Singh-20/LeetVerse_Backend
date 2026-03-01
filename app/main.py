@@ -44,14 +44,32 @@ async def get_profile(user: dict = Depends(get_current_user)):
     role = user.get("role")
     
     if role == "admin":
-        # Admin: Fetch all users
-        users_ref = db.collection("users")
-        docs = users_ref.stream()
-        all_users = [doc.to_dict() for doc in docs]
+        # Admin: Fetch participants and fellow admins
+        participants_docs = db.collection("users").stream()
+        admins_docs = db.collection("admins").stream()
+        
+        admins_data = []
+        admin_emails = set()
+        for doc in admins_docs:
+            d = doc.to_dict()
+            # Ensure the email (doc ID) is included if missing in fields
+            if 'email' not in d:
+                d['email'] = doc.id
+            admins_data.append(d)
+            admin_emails.add(d['email'].lower())
+        
+        participants_data = []
+        for doc in participants_docs:
+            d = doc.to_dict()
+            # Filter out anyone whose email is in the admin list
+            if d.get('email', '').lower() not in admin_emails:
+                participants_data.append(d)
+                
         return {
             "role": "admin",
             "requesting_user": email,
-            "data": all_users
+            "participants": participants_data,
+            "admins": admins_data
         }
     else:
         # Normal User: Fetch only their own document
@@ -111,6 +129,17 @@ async def upload_excel(
 async def get_overall_rankings(user: dict = Depends(get_current_user)):
     from crud import get_overall_leaderboard
     return get_overall_leaderboard()
+
+@app.get("/upload-status")
+async def get_upload_status(
+    score_date: str = Query(None),
+    admin: dict = Depends(get_admin_user)
+):
+    """Checks if scores for a specific date (or today) are already uploaded."""
+    from crud import check_scores_exist
+    target_date = score_date or date.today().isoformat()
+    exists = check_scores_exist(target_date)
+    return {"date": target_date, "uploaded": exists}
 
 @app.get("/leaderboard/{score_date}", response_model=List[LeaderboardEntry])
 async def get_leaderboard(score_date: str, user: dict = Depends(get_current_user)):
