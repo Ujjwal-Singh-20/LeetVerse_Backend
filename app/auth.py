@@ -21,27 +21,37 @@ async def verify_firebase_token(res: HTTPAuthorizationCredentials = Security(sec
         email = decoded_token.get("email", "").lower()
         name = decoded_token.get("name", "KIIT Student")
         
-        # 2. Enforce @kiit.ac.in domain
-        if not email or not email.endswith("@kiit.ac.in"):
-            print(f"Unauthorized access attempt from: {email}")
-            raise HTTPException(status_code=403, detail="Access restricted to @kiit.ac.in emails.")
-        
-        # 3. Extract Roll Number
-        roll_no = email.split("@")[0].upper()
-        
-        # 4. Check Roles
+        # 2. Check Roles FIRST
         role = "participant"
         if is_admin(email):
             role = "admin"
             
-        # 5. Set Custom Claims for future robustness (Faster client/rules check)
-        # This makes 'role' and 'rollNo' available directly in the Firebase token
+        # 3. Handle Admins: Skip KIIT restriction and Registration
+        if role == "admin":
+            decoded_token.update({
+                "role": role,
+                "rollNo": "ADMIN",
+                "email": email,
+                "name": name
+            })
+            print(f"Auth Success (ADMIN): {email}")
+            return decoded_token
+
+        # 4. Enforce @kiit.ac.in domain for participants
+        if not email or not email.endswith("@kiit.ac.in"):
+            print(f"Unauthorized access attempt from: {email}")
+            raise HTTPException(status_code=403, detail="Access restricted to @kiit.ac.in emails.")
+        
+        # 5. Extract Roll Number
+        roll_no = email.split("@")[0].upper()
+        
+        # 6. Set Custom Claims for future robustness
         auth.set_custom_user_claims(uid, {
             "role": role,
             "rollNo": roll_no
         })
             
-        # 6. Register User (Robustness/Badges)
+        # 7. Register Participant (skip if admin)
         register_user_if_not_exists(uid, email, name, roll_no)
         
         # Attach our metadata to the token dict for this specific request

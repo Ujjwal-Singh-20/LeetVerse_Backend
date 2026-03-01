@@ -117,9 +117,15 @@ def is_admin(email: str) -> bool:
     return doc.exists
 
 def get_all_admins() -> List[dict]:
-    """Fetches all administrators."""
+    """Fetches all administrators, ensuring email is the document ID."""
     docs = db.collection("admins").stream()
-    return [doc.to_dict() for doc in docs]
+    admins = []
+    for doc in docs:
+        d = doc.to_dict()
+        if 'email' not in d:
+            d['email'] = doc.id
+        admins.append(d)
+    return admins
 
 def register_user_if_not_exists(uid: str, email: str, name: str, roll_no: str):
     user_ref = db.collection("users").document(roll_no)
@@ -184,7 +190,7 @@ def get_overall_leaderboard(limit: int = 50) -> List[LeaderboardEntry]:
         if count >= limit: break
         data = doc.to_dict()
         email = data.get("email", "").lower()
-        if email in admins: continue # Skip admins in leaderboard
+        if email in admins or doc.id.lower() in admins: continue # Skip admins in leaderboard
         
         leaderboard.append(LeaderboardEntry(rollNo=doc.id, points=data.get("totalPoints", 0), remarks=""))
         count += 1
