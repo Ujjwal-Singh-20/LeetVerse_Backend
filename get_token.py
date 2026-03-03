@@ -17,7 +17,7 @@ if not firebase_admin._apps:
 
 # 2. Configuration
 API_KEY = os.getenv("FIREBASE_CONFIG_API_KEY")
-EMAIL = "ujjusingh20@gmail.com"#admin email, this token can do all things        "2205789@kiit.ac.in" normal user email, is restricted from endpoints like /user/.../history
+EMAIL = "24158130@kiit.ac.in"#admin email, this token can do all things        "2205789@kiit.ac.in" normal user email, is restricted from endpoints like /user/.../history
 
 def get_id_token_via_admin():
     # A. Generate a Custom Token using Admin SDK (Including email claim)

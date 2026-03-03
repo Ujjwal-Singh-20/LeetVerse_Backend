@@ -20,6 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def health():
+    return {"server healthy"}
+
 @app.get("/me")
 async def get_me(user: dict = Depends(get_current_user)):
     """
@@ -92,10 +96,11 @@ async def get_profile(user: dict = Depends(get_current_user)):
         }
 
 @app.post("/login")
-async def login(user: dict = Depends(get_current_user)):
+async def login(request: Request, user: dict = Depends(get_current_user)):
     """
     POST endpoint for login, matches the test folder pattern.
     Returns user details after verification.
+    Supports both with and without request body.
     """
     return {
         "status": "success",
@@ -126,7 +131,7 @@ async def upload_excel(
     return UploadResponse(message="Success", updated_count=updated_count, total_processed=len(scores))
 
 @app.get("/leaderboard/overall", response_model=List[LeaderboardEntry])
-async def get_overall_rankings(user: dict = Depends(get_current_user)):
+async def get_overall_rankings():       #user: dict = Depends(get_current_user)):
     from crud import get_overall_leaderboard
     return get_overall_leaderboard()
 
@@ -175,4 +180,4 @@ async def get_user_history_endpoint(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
