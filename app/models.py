@@ -31,6 +31,7 @@ class ParticipantScore(BaseModel):
 class LeaderboardEntry(BaseModel):
     rollNo: str
     points: int
+    name: Optional[str] = ""
     remarks: Optional[str] = ""
 
 class UserHistoryEntry(BaseModel):

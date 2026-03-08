@@ -48,5 +48,13 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
+
+    // Members Collection
+    match /members/{role} {
+      allow read: if true;
+      match /persons/{personId} {
+        allow read: if true;
+      }
+    }
   }
 }

@@ -154,9 +154,23 @@ def get_leaderboard_for_date(score_date: str) -> List[LeaderboardEntry]:
     scores_ref = db.collection("scores").document(score_date).collection("participants")
     query = scores_ref.order_by("points", direction=firestore.Query.DESCENDING).stream()
     leaderboard = []
+    
+    # To avoid N+1 queries in a real production app, we could denormalize names into the daily scores.
+    # For now, we'll fetch them from the 'users' collection.
     for doc in query:
         data = doc.to_dict()
-        leaderboard.append(LeaderboardEntry(rollNo=doc.id, points=data.get("points", 0), remarks=data.get("remarks", "")))
+        roll_no = doc.id
+        
+        # Fetch name from users collection
+        user_doc = db.collection("users").document(roll_no).get()
+        name = user_doc.to_dict().get("name", "") if user_doc.exists else ""
+        
+        leaderboard.append(LeaderboardEntry(
+            rollNo=roll_no, 
+            points=data.get("points", 0), 
+            name=name,
+            remarks=data.get("remarks", "")
+        ))
     return leaderboard
 
 def get_user_score_history(roll_no: str) -> List[UserHistoryEntry]:
@@ -192,7 +206,12 @@ def get_overall_leaderboard(limit: int = 50) -> List[LeaderboardEntry]:
         email = data.get("email", "").lower()
         if email in admins or doc.id.lower() in admins: continue # Skip admins in leaderboard
         
-        leaderboard.append(LeaderboardEntry(rollNo=doc.id, points=data.get("totalPoints", 0), remarks=""))
+        leaderboard.append(LeaderboardEntry(
+            rollNo=doc.id, 
+            points=data.get("totalPoints", 0), 
+            name=data.get("name", ""),
+            remarks=""
+        ))
         count += 1
     return leaderboard
 
