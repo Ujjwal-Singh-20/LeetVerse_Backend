@@ -134,10 +134,62 @@ async def upload_excel(
     updated_count = update_bulk_scores_atomic(scores, target_date, admin_email)
     return UploadResponse(message="Success", updated_count=updated_count, total_processed=len(scores))
 
-@app.get("/leaderboard/overall", response_model=List[LeaderboardEntry])
-async def get_overall_rankings():       #user: dict = Depends(get_current_user)):
-    from crud import get_overall_leaderboard
-    return get_overall_leaderboard()
+@app.post("/cron/update-leaderboard")
+async def cron_update_leaderboard(request: Request):
+    auth_header = request.headers.get("Authorization")
+    cron_secret = os.getenv("CRON_SECRET")
+    
+    if not cron_secret or auth_header != f"Bearer {cron_secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized cron request")
+        
+    from crud import sync_leaderboard_to_edge_config
+    success = sync_leaderboard_to_edge_config()
+    if success:
+        return {"message": "Leaderboard synced to Edge Config successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to sync to Edge Config")
+
+@app.get("/leaderboard/top10")
+async def get_top10_leaderboard(rollNo: str = Query(None)):
+    from crud import get_edge_leaderboard, get_overall_leaderboard
+    top10 = get_edge_leaderboard("leaderboard_top10")
+    
+    if not top10:
+        # Fallback: calculate from Firestore
+        full = get_overall_leaderboard(limit=None)
+        ranked = [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1} for i, e in enumerate(full)]
+        top10 = ranked[:10]
+        if rollNo:
+            user_entry = next((item for item in ranked if item["rollNo"] == rollNo), None)
+            if user_entry and user_entry["rank"] > 10:
+                top10.append(user_entry)
+        return top10
+        
+    # If Edge Config fetched successfully and we need a specific user outside top 10
+    if rollNo and not any(item["rollNo"] == rollNo for item in top10):
+        full = get_edge_leaderboard("leaderboard_full")
+        if full:
+            user_entry = next((item for item in full if item["rollNo"] == rollNo), None)
+            if user_entry:
+                top10.append(user_entry)
+        else:
+            # Fallback to firestore just for this user if full Edge Config read failed
+            full_fs = get_overall_leaderboard(limit=None)
+            ranked = [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1} for i, e in enumerate(full_fs)]
+            user_entry = next((item for item in ranked if item["rollNo"] == rollNo), None)
+            if user_entry:
+                top10.append(user_entry)
+                
+    return top10
+
+@app.get("/leaderboard/full")
+async def get_full_leaderboard_endpoint(admin: dict = Depends(get_admin_user)):
+    from crud import get_edge_leaderboard, get_overall_leaderboard
+    full = get_edge_leaderboard("leaderboard_full")
+    if not full:
+        full_fs = get_overall_leaderboard(limit=None)
+        return [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1} for i, e in enumerate(full_fs)]
+    return full
 
 @app.get("/upload-status")
 async def get_upload_status(

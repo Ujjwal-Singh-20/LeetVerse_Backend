@@ -1,7 +1,11 @@
 from google.cloud import firestore
 from firebase_config import db
 from models import LeaderboardEntry, UserHistoryEntry
-from typing import List
+from typing import List, Optional
+import os
+import json
+import urllib.request
+import urllib.error
 
 def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_email: str):
     """
@@ -215,7 +219,7 @@ def get_user_score_history(roll_no: str) -> List[UserHistoryEntry]:
     history.sort(key=lambda x: x.date, reverse=True)
     return history
 
-def get_overall_leaderboard(limit: int = 50) -> List[LeaderboardEntry]:
+def get_overall_leaderboard(limit: Optional[int] = 50) -> List[LeaderboardEntry]:
     # We should exclude users who are also admins if they accidentally exist in users collection
     admins = {a.get("email").lower() for a in get_all_admins() if a.get("email")}
     
@@ -225,7 +229,7 @@ def get_overall_leaderboard(limit: int = 50) -> List[LeaderboardEntry]:
     leaderboard = []
     count = 0
     for doc in query:
-        if count >= limit: break
+        if limit is not None and count >= limit: break
         data = doc.to_dict()
         email = data.get("email", "").lower()
         if email in admins or doc.id.lower() in admins: continue # Skip admins in leaderboard
@@ -249,3 +253,90 @@ def check_scores_exist(score_date: str) -> bool:
     doc = db.collection("scores").document(score_date).get()
     return doc.exists
 
+def sync_leaderboard_to_edge_config() -> bool:
+    """Calculates full leaderboard and pushes top 10 & full to Edge Config"""
+    full_board = get_overall_leaderboard(limit=None)
+    
+    ranked_full = []
+    for idx, entry in enumerate(full_board):
+        ranked_full.append({
+            "rollNo": entry.rollNo,
+            "name": entry.name,
+            "points": entry.points,
+            "rank": idx + 1
+        })
+        
+    top_10 = ranked_full[:10]
+    
+    token = os.getenv("VERCEL_API_TOKEN")
+    config_id = os.getenv("EDGE_CONFIG_ID")
+    team_id = os.getenv("TEAM_ID")
+    
+    if not token or not config_id:
+        print("Missing VERCEL_API_TOKEN or EDGE_CONFIG_ID")
+        return False
+        
+    url = f"https://api.vercel.com/v1/edge-config/{config_id}/items"
+    if team_id:
+        url += f"?teamId={team_id}"
+        
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "items": [
+            {
+                "operation": "upsert",
+                "key": "leaderboard_top10",
+                "value": top_10
+            },
+            {
+                "operation": "upsert",
+                "key": "leaderboard_full",
+                "value": ranked_full
+            }
+        ]
+    }
+    
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method="PATCH")
+    try:
+        with urllib.request.urlopen(req) as response:
+            response.read()
+            return True
+    except urllib.error.URLError as e:
+        print(f"Failed to update Edge Config: {e}")
+        if hasattr(e, 'read'):
+            print(e.read())
+        return False
+
+def get_edge_leaderboard(key: str) -> list:
+    """Fetch a value from Edge Config via Vercel REST API."""
+    config_id = os.getenv("EDGE_CONFIG_ID")
+    token = os.getenv("VERCEL_API_TOKEN")
+    team_id = os.getenv("TEAM_ID")
+    
+    if not config_id or not token:
+        print("EDGE_CONFIG_ID or VERCEL_API_TOKEN not set, skipping Edge Config read")
+        return []
+    
+    url = f"https://api.vercel.com/v1/edge-config/{config_id}/item/{key}"
+    if team_id:
+        url += f"?teamId={team_id}"
+    
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            # Vercel returns {"value": [...]} for individual item reads
+            if isinstance(data, dict) and "value" in data:
+                return data["value"]
+            return data if isinstance(data, list) else []
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8') if hasattr(e, 'read') else ''
+        print(f"Edge Config read HTTP error {e.code}: {body}")
+        return []
+    except Exception as e:
+        print(f"Failed to read Edge Config: {e}")
+        return []
