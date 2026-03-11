@@ -54,6 +54,10 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
         "isReupload": existing_meta.exists
     }, merge=True)
 
+    # Fetch past score dates to handle retroactive absences
+    all_score_docs = db.collection("scores").get()
+    all_past_dates = [d.id for d in all_score_docs if d.id != score_date]
+
     batch = db.batch()
     
     # Process Present Participants
@@ -66,18 +70,34 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
         user_ref = users_ref.document(roll_no)
         participant_ref = score_date_ref.collection("participants").document(roll_no)
         
+        is_new_user = roll_no not in all_roll_nos
+        past_absences = len(all_past_dates) if is_new_user else 0
+        
         # Update User doc
         user_update_data = {
             "rollNo": roll_no,
             "totalPoints": firestore.Increment(points),
             "attendanceSummary": {
-                "daysPresent": firestore.Increment(1)
+                "daysPresent": firestore.Increment(1),
+                "daysAbsent": firestore.Increment(past_absences)
             }
         }
         if name:
             user_update_data["name"] = name
             
         batch.set(user_ref, user_update_data, merge=True)
+        
+        # Record retroactive absences for new users
+        if is_new_user:
+            for past_date in all_past_dates:
+                past_participant_ref = db.collection("scores").document(past_date).collection("participants").document(roll_no)
+                batch.set(past_participant_ref, {
+                    "rollNo": roll_no,
+                    "points": 0,
+                    "remarks": "Added retroactively as absent",
+                    "attendance": False,
+                    "status": "absent"
+                })
         
         # Record daily score
         batch.set(participant_ref, {
@@ -161,15 +181,18 @@ def get_leaderboard_for_date(score_date: str) -> List[LeaderboardEntry]:
         data = doc.to_dict()
         roll_no = doc.id
         
+        from utils import clean_nan
+        
         # Fetch name from users collection
         user_doc = db.collection("users").document(roll_no).get()
-        name = user_doc.to_dict().get("name", "") if user_doc.exists else ""
+        user_data = user_doc.to_dict() if user_doc.exists else {}
+        name = clean_nan(user_data.get("name")) or ""
         
         leaderboard.append(LeaderboardEntry(
             rollNo=roll_no, 
-            points=data.get("points", 0), 
+            points=clean_nan(data.get("points")) or 0, 
             name=name,
-            remarks=data.get("remarks", "")
+            remarks=clean_nan(data.get("remarks")) or ""
         ))
     return leaderboard
 
@@ -181,10 +204,11 @@ def get_user_score_history(roll_no: str) -> List[UserHistoryEntry]:
         participant_ref = db.collection("scores").document(date_id).collection("participants").document(roll_no).get()
         if participant_ref.exists:
             data = participant_ref.to_dict()
+            from utils import clean_nan
             history.append(UserHistoryEntry(
                 date=date_id,
-                points=data.get("points", 0),
-                remarks=data.get("remarks", ""),
+                points=clean_nan(data.get("points")) or 0,
+                remarks=clean_nan(data.get("remarks")) or "",
                 attendance=data.get("attendance", False),
                 status=data.get("status", "absent")
             ))
@@ -206,10 +230,11 @@ def get_overall_leaderboard(limit: int = 50) -> List[LeaderboardEntry]:
         email = data.get("email", "").lower()
         if email in admins or doc.id.lower() in admins: continue # Skip admins in leaderboard
         
+        from utils import clean_nan
         leaderboard.append(LeaderboardEntry(
             rollNo=doc.id, 
-            points=data.get("totalPoints", 0), 
-            name=data.get("name", ""),
+            points=clean_nan(data.get("totalPoints")) or 0, 
+            name=clean_nan(data.get("name")) or "",
             remarks=""
         ))
         count += 1

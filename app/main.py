@@ -69,11 +69,12 @@ async def get_profile(user: dict = Depends(get_current_user)):
             if d.get('email', '').lower() not in admin_emails:
                 participants_data.append(d)
                 
+        from utils import sanitize_dict
         return {
             "role": "admin",
             "requesting_user": email,
-            "participants": participants_data,
-            "admins": admins_data
+            "participants": [sanitize_dict(p) for p in participants_data],
+            "admins": [sanitize_dict(a) for a in admins_data]
         }
     else:
         # Normal User: Fetch only their own document
@@ -82,17 +83,19 @@ async def get_profile(user: dict = Depends(get_current_user)):
         
         if not user_doc.exists:
             # Fallback if doc doesn't exist yet but user is authenticated
+            from utils import sanitize_dict
             return {
                 "role": role,
                 "requesting_user": email,
-                "data": user,
+                "data": sanitize_dict(user),
                 "message": "Detailed profile not found in database."
             }
         
+        from utils import sanitize_dict
         return {
             "role": "participant",
             "requesting_user": email,
-            "data": user_doc.to_dict()
+            "data": sanitize_dict(user_doc.to_dict())
         }
 
 @app.post("/login")
@@ -117,6 +120,7 @@ async def login(request: Request, user: dict = Depends(get_current_user)):
 @app.post("/upload-excel", response_model=UploadResponse)
 async def upload_excel(
     file: UploadFile = File(...),
+    score_date: str = Query(None),
     admin: dict = Depends(get_admin_user)
 ):
     if not file.filename.endswith(('.xlsx', '.xls')):
@@ -124,10 +128,10 @@ async def upload_excel(
     
     content = await file.read()
     scores = parse_excel_scores(content)
-    today_str = date.today().isoformat()
+    target_date = score_date or date.today().isoformat()
     admin_email = admin.get("email")
     
-    updated_count = update_bulk_scores_atomic(scores, today_str, admin_email)
+    updated_count = update_bulk_scores_atomic(scores, target_date, admin_email)
     return UploadResponse(message="Success", updated_count=updated_count, total_processed=len(scores))
 
 @app.get("/leaderboard/overall", response_model=List[LeaderboardEntry])

@@ -26,7 +26,7 @@ FastAPI backend integrated with Firebase Firestore for managing participant scor
    ```bash
    python app/main.py
    ```
-   The API will be available at `http://localhost:8000`.
+   The API will be available at `http://localhost:8080`.
 
 ---
 

@@ -1,3 +1,10 @@
+# UPLOAD FOR SPECIFIC DATES
+"""
+EMAIL	SCORE	NAME	DATE
+240....@kiit.ac.in	15	NULL	20-02-2026
+
+"""
+
 import pandas as pd
 import sys
 import os

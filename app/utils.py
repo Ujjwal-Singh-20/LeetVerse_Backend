@@ -1,6 +1,24 @@
 import pandas as pd
 from io import BytesIO
 from typing import List, Dict
+import math
+
+def clean_nan(val):
+    if isinstance(val, float) and math.isnan(val):
+        return None
+    return val
+
+def sanitize_dict(d: dict) -> dict:
+    """Recursively removes NaN values from dictionaries."""
+    sanitized = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            sanitized[k] = sanitize_dict(v)
+        elif isinstance(v, list):
+            sanitized[k] = [sanitize_dict(i) if isinstance(i, dict) else clean_nan(i) for i in v]
+        else:
+            sanitized[k] = clean_nan(v)
+    return sanitized
 
 def parse_excel_scores(file_content: bytes) -> List[Dict]:
     """
@@ -44,7 +62,7 @@ def parse_excel_scores(file_content: bytes) -> List[Dict]:
                     if 'rollNo' not in entry:  # Only if rollNo not already set by a direct column
                         entry['rollNo'] = email_str
                 else:
-                    entry[target] = val
+                    entry[target] = clean_nan(val)
         
         if 'rollNo' in entry and 'points' in entry:
             # Clean rollNo to avoid .0 for numeric values (common in pandas/excel)
