@@ -295,7 +295,7 @@ def sync_leaderboard_to_edge_config() -> bool:
             {
                 "operation": "upsert",
                 "key": "leaderboard_full",
-                "value": ranked_full
+                "value": ranked_full[:100]
             }
         ]
     }

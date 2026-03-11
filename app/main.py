@@ -167,13 +167,15 @@ async def get_top10_leaderboard(rollNo: str = Query(None)):
         
     # If Edge Config fetched successfully and we need a specific user outside top 10
     if rollNo and not any(item["rollNo"] == rollNo for item in top10):
-        full = get_edge_leaderboard("leaderboard_full")
-        if full:
-            user_entry = next((item for item in full if item["rollNo"] == rollNo), None)
+        top100 = get_edge_leaderboard("leaderboard_full")
+        if top100:
+            user_entry = next((item for item in top100 if item["rollNo"] == rollNo), None)
             if user_entry:
                 top10.append(user_entry)
-        else:
-            # Fallback to firestore just for this user if full Edge Config read failed
+        
+        # If still not found (either user is outside top 100 or Edge read failed)
+        if not any(item["rollNo"] == rollNo for item in top10):
+            # Fallback to firestore just for this user
             full_fs = get_overall_leaderboard(limit=None)
             ranked = [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1} for i, e in enumerate(full_fs)]
             user_entry = next((item for item in ranked if item["rollNo"] == rollNo), None)
