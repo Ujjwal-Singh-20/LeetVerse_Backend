@@ -1,7 +1,7 @@
 name: Refresh Leaderboard (Edge Config Sync)
 on:
   schedule:
-    - cron: '30 18 * * *'   # 18:30 UTC = midnight IST
+    # - cron: '30 18 * * *'   # 18:30 UTC = midnight IST
   workflow_dispatch:          # manual trigger from GitHub UI
 
 jobs:
