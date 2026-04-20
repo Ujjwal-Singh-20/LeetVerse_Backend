@@ -1,0 +1,3 @@
+change latest season and level for each new level, in the env for this folder and also for the render settings, 
+also in vercel if required,
+also in github actions secrets
