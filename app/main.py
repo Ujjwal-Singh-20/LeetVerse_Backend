@@ -3,11 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from datetime import date
 import os
-from models import UploadResponse, LeaderboardEntry, UserHistoryEntry
+from models import UploadResponse, LeaderboardEntry, UserHistoryEntry, CurriculumEntry, ExtraPractice, QuestionValidationRequest
 from utils import parse_excel_scores
-from crud import update_bulk_scores_atomic, get_leaderboard_for_date, get_user_score_history, get_program_details, is_admin
+from crud import (
+    update_bulk_scores_atomic, get_leaderboard_for_date, get_user_score_history, 
+    get_program_details, is_admin, save_curriculum, get_all_curriculum, 
+    add_extra_practice, get_user_extra_practice, verify_and_schedule_reminder,
+    get_daily_reminders, delete_curriculum
+)
 from auth import get_current_user, get_admin_user, set_user_role_claim, verify_firebase_token
-from firebase_config import db, get_coll_path
+from firebase_config import db, get_coll_path, CURRENT_SEASON, CURRENT_LEVEL
 
 app = FastAPI(title="LeetVerse Backend")
 
@@ -127,6 +132,24 @@ async def get_profile(
             "data": sanitize_dict(user_doc.to_dict())
         }
 
+@app.patch("/profile")
+async def update_profile(
+    data: dict,
+    user: dict = Depends(get_current_user)
+):
+    roll_no = user.get("rollNo")
+    if not roll_no:
+        raise HTTPException(status_code=400, detail="User roll number not found.")
+    
+    # Only allow updating leetcode_username for now
+    username = data.get("leetcode_username")
+    if username is not None:
+        # Update in current active session
+        db.collection(get_coll_path("users")).document(roll_no).set({"leetcode_username": username}, merge=True)
+        return {"status": "success", "message": "Profile updated."}
+    
+    return {"status": "error", "message": "No valid fields to update."}
+
 @app.post("/login")
 async def login(request: Request, user: dict = Depends(get_current_user)):
     """
@@ -179,6 +202,26 @@ async def cron_update_leaderboard(request: Request):
         return {"message": "Leaderboard synced to Edge Config successfully"}
     else:
         raise HTTPException(status_code=500, detail="Failed to sync to Edge Config")
+
+@app.get("/leaderboard/cached/{key}")
+async def get_cached_leaderboard(key: str):
+    from crud import get_edge_leaderboard
+    data = get_edge_leaderboard(key)
+    if data is not None:
+        return data
+    # If not in Edge Config, try looking for a top10_S1_L1 style key
+    if key.startswith("top10_"):
+        parts = key.split("_")
+        if len(parts) >= 3:
+            season, level = parts[1], parts[2]
+            # Try to fetch from session metadata
+            session_doc = db.collection("seasons").document(season).collection("levels").document(level).get()
+            if session_doc.exists:
+                blob_url = session_doc.to_dict().get("top10_url")
+                if blob_url:
+                    cached_data = fetch_json_from_url(blob_url)
+                    if cached_data: return cached_data
+    raise HTTPException(status_code=404, detail="Cached data not found")
 
 @app.get("/leaderboard/top10")
 async def get_top10_leaderboard(
@@ -298,9 +341,9 @@ async def cron_sync_vercel(request: Request):
         
     from crud import sync_leaderboard_to_blob, sync_leaderboard_to_edge_config
     success_blob = sync_leaderboard_to_blob()
-    success_edge = sync_leaderboard_to_edge_config()
+    # success_edge = sync_leaderboard_to_edge_config()
     
-    if success_blob and success_edge:
+    if success_blob:# and success_edge:
         return {"message": "All caches synced successfully"}
     else:
         raise HTTPException(status_code=500, detail="Partial or total sync failure")
@@ -450,3 +493,81 @@ async def get_user_rank(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+
+# --- CURRICULUM ENDPOINTS ---
+
+@app.post("/curriculum")
+async def add_curriculum(entry: CurriculumEntry, admin: dict = Depends(get_admin_user)):
+    season = admin.get("season", CURRENT_SEASON)
+    level = admin.get("level", CURRENT_LEVEL)
+    save_curriculum(entry, season, level)
+    # Trigger sync to blob so frontend sees it immediately
+    from crud import sync_leaderboard_to_blob
+    sync_leaderboard_to_blob()
+    return {"status": "success", "message": f"Curriculum for {entry.date} saved."}
+
+@app.get("/curriculum")
+async def get_curriculum(season: str = Query(CURRENT_SEASON), level: str = Query(CURRENT_LEVEL)):
+    # 1. Check if we have a cached Blob URL in session metadata
+    session_doc = db.collection("seasons").document(season).collection("levels").document(level).get()
+    if session_doc.exists:
+        meta = session_doc.to_dict()
+        blob_url = meta.get("curriculum_url")
+        if blob_url:
+            cached_data = fetch_json_from_url(blob_url)
+            if cached_data:
+                return cached_data
+
+    # 2. Fallback to Firestore realtime scan
+    return get_all_curriculum(season, level)
+
+@app.delete("/curriculum/{date_str}")
+async def remove_curriculum(date_str: str, admin: dict = Depends(get_admin_user)):
+    season = admin.get("season", CURRENT_SEASON)
+    level = admin.get("level", CURRENT_LEVEL)
+    delete_curriculum(date_str, season, level)
+    from crud import sync_leaderboard_to_blob
+    sync_leaderboard_to_blob()
+    return {"status": "success"}
+
+# --- EXTRA PRACTICE ENDPOINTS ---
+
+@app.post("/question/extra")
+async def log_extra_practice(roll_no: str, date_str: str, slug: str, user: dict = Depends(get_current_user)):
+    # Basic security check: user can only log for themselves unless admin
+    if user.get("role") != "admin" and user.get("rollNo") != roll_no:
+        # We need rollNo in user dict from get_current_user. Let's ensure auth handles this.
+        pass 
+    add_extra_practice(roll_no, date_str, slug, CURRENT_SEASON, CURRENT_LEVEL)
+    return {"status": "success"}
+
+@app.get("/question/extra/{roll_no}")
+async def fetch_extra_practice(roll_no: str, user: dict = Depends(get_current_user)):
+    return get_user_extra_practice(roll_no, CURRENT_SEASON, CURRENT_LEVEL)
+
+# --- VERIFICATION & REMINDERS ---
+
+@app.post("/question/complete")
+async def verify_and_complete(req: QuestionValidationRequest, user: dict = Depends(get_current_user)):
+    result = await verify_and_schedule_reminder(req, CURRENT_SEASON, CURRENT_LEVEL)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.get("/reminders")
+async def fetch_reminders(roll_no: str, date_str: str, user: dict = Depends(get_current_user)):
+    # 1. Check if it's for today and we have a cached blob
+    today_str = date.today().isoformat()
+    if date_str == today_str:
+        from crud import get_edge_leaderboard
+        blob_url = get_edge_leaderboard("today_reminders_url")
+        if blob_url:
+            all_reminders = fetch_json_from_url(blob_url)
+            if all_reminders:
+                user_reminders = [r for r in all_reminders if r.get("rollNo") == roll_no]
+                # If found in cache, return it
+                if user_reminders:
+                    return user_reminders
+
+    # 2. Fallback to realtime DB query
+    return get_daily_reminders(roll_no, date_str)

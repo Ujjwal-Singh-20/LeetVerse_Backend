@@ -1,11 +1,168 @@
 from firebase_admin import firestore
 from firebase_config import db, get_coll_path
-from models import LeaderboardEntry, UserHistoryEntry
-from typing import List, Optional
+from models import LeaderboardEntry, UserHistoryEntry, CurriculumEntry, ExtraPractice, Reminder, QuestionValidationRequest
+from leetcode_handler import fetch_recent_accepted_submissions
+from datetime import datetime, timedelta
+from typing import List, Optional, Any
 import os
 import json
 import urllib.request
 import urllib.error
+
+# --- CURRICULUM MANAGEMENT ---
+
+def save_curriculum(entry: CurriculumEntry, season: str = None, level: str = None):
+    """Saves daily curriculum (class/assigned questions)."""
+    coll_path = get_coll_path("curriculum", season, level)
+    db.collection(coll_path).document(entry.date).set(entry.dict())
+    return True
+
+def get_all_curriculum(season: str = None, level: str = None) -> List[dict]:
+    """Fetches all curriculum entries, sorted by date descending."""
+    coll_path = get_coll_path("curriculum", season, level)
+    docs = db.collection(coll_path).order_by("date", direction=firestore.Query.DESCENDING).stream()
+    return [doc.to_dict() for doc in docs]
+
+def delete_curriculum(date_str: str, season: str = None, level: str = None):
+    coll_path = get_coll_path("curriculum", season, level)
+    db.collection(coll_path).document(date_str).delete()
+    return True
+
+# --- EXTRA PRACTICE ---
+
+def add_extra_practice(roll_no: str, date_str: str, slug: str, season: str = None, level: str = None):
+    """Adds an extra practice problem for a user."""
+    user_ref = db.collection(get_coll_path("users", season, level)).document(roll_no)
+    extra_ref = user_ref.collection("extra_practice").document(date_str)
+    
+    doc = extra_ref.get()
+    if doc.exists:
+        extra_ref.update({
+            "slugs": firestore.ArrayUnion([slug])
+        })
+    else:
+        extra_ref.set({
+            "date": date_str,
+            "rollNo": roll_no,
+            "slugs": [slug]
+        })
+    return True
+
+def get_user_extra_practice(roll_no: str, season: str = None, level: str = None) -> List[dict]:
+    """Fetches all extra practice for a user, sorted by date descending."""
+    user_ref = db.collection(get_coll_path("users", season, level)).document(roll_no)
+    docs = user_ref.collection("extra_practice").order_by("date", direction=firestore.Query.DESCENDING).stream()
+    return [doc.to_dict() for doc in docs]
+
+# --- REMINDERS & SPACED REPETITION ---
+
+def calculate_rs_and_date(req: QuestionValidationRequest) -> tuple:
+    """Calculates Retention Score and Reminder Date based on performance."""
+    rs = 5
+    rs += 3 if req.self_solved else 0
+    rs += -2 if req.hint_used else 2
+    rs += -3 if req.solution_seen else 2
+    rs += 2 if req.time_taken_mins < 30 else -2
+    
+    if rs <= 4: interval = 3
+    elif rs <= 7: interval = 7
+    elif rs <= 9: interval = 14
+    else: interval = 21
+    
+    remind_date = (datetime.now() + timedelta(days=interval)).strftime("%Y-%m-%d")
+    return rs, remind_date
+
+async def verify_and_schedule_reminder(req: QuestionValidationRequest, season: str = None, level: str = None):
+    """Verifies LeetCode submission and schedules a one-time reminder."""
+    # 1. Get User Profile for leetcode_username
+    user_doc = db.collection(get_coll_path("users", season, level)).document(req.rollNo).get()
+    if not user_doc.exists:
+        return {"error": "User profile not found in database."}
+    
+    user_data = user_doc.to_dict()
+    username = user_data.get("leetcode_username")
+    if not username:
+        return {"error": "LeetCode username not linked to profile. Please update your settings."}
+    
+    # 2. Verify recent accepted submissions on LeetCode
+    try:
+        lc_data = await fetch_recent_accepted_submissions(username)
+        recent_ac = lc_data.get("recentAcSubmissionList", [])
+        is_verified = any(s['titleSlug'] == req.slug for s in recent_ac)
+        
+        if not is_verified:
+            return {"error": "Completion not verified. Ensure your submission is 'Accepted' on LeetCode and try again."}
+    except Exception as e:
+        return {"error": f"Failed to verify with LeetCode: {str(e)}"}
+    
+    # 3. Calculate RS and initial Remind Date
+    rs, remind_date = calculate_rs_and_date(req)
+    
+    # 4. Handle Staggering logic (Avoid reminder overload on a single day)
+    final_remind_date = remind_date
+    for i in range(7): # Stagger up to 7 days if needed
+        check_date = (datetime.strptime(remind_date, "%Y-%m-%d") + timedelta(days=i)).strftime("%Y-%m-%d")
+        # Check if this user already has a reminder on this specific date
+        existing = db.collection("reminders").document(check_date).collection("participants").document(req.rollNo).get()
+        if not existing.exists:
+            final_remind_date = check_date
+            break
+    
+    # 5. Save the Reminder
+    reminder_doc = {
+        "rollNo": req.rollNo,
+        "slug": req.slug,
+        "remind_date": final_remind_date,
+        "status": "pending",
+        "rs_score": rs,
+        "scheduled_at": firestore.SERVER_TIMESTAMP
+    }
+    db.collection("reminders").document(final_remind_date).collection("participants").document(req.rollNo).set(reminder_doc)
+    
+    # 6. Mark as completed in user profile for easy UI tracking
+    db.collection(get_coll_path("users", season, level)).document(req.rollNo).update({
+        "completed_slugs": firestore.ArrayUnion([req.slug])
+    })
+    
+    return {
+        "status": "success", 
+        "remind_date": final_remind_date, 
+        "rs_score": rs,
+        "message": f"Verified! Reminder scheduled for {final_remind_date}."
+    }
+
+def get_daily_reminders(roll_no: str, date_str: str) -> List[dict]:
+    """Fetches reminders for a specific user on a specific date."""
+    doc = db.collection("reminders").document(date_str).collection("participants").document(roll_no).get()
+    return [doc.to_dict()] if doc.exists else []
+
+def archive_session_to_edge(season: str, level: str) -> bool:
+    """Finalizes a session by archiving its Top 10 to Edge Config."""
+    full_board = get_overall_leaderboard(limit=10, season=season, level=level)
+    if not full_board:
+        return False
+        
+    top_10 = [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1, "leetcode_username": e.leetcode_username} for i, e in enumerate(full_board)]
+    
+    config_id = os.getenv("EDGE_CONFIG_ID")
+    vercel_token = os.getenv("VERCEL_API_TOKEN")
+    if not config_id or not vercel_token:
+        return False
+
+    archive_key = f"top10_{season}_{level}"
+    url = f"https://api.vercel.com/v1/edge-config/{config_id}/items"
+    payload = {"items": [
+        {"operation": "upsert", "key": archive_key, "value": top_10}
+    ]}
+    
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Authorization": f"Bearer {vercel_token}", "Content-Type": "application/json"}, method="PATCH")
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status in [200, 201, 202]
+    except:
+        return False
+
+# --- EXISTING SCORE & ADMIN LOGIC ---
 
 def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_email: str, season: str = None, level: str = None):
     """
@@ -15,69 +172,48 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
     users_ref = db.collection(get_coll_path("users", season, level))
     score_date_ref = db.collection(get_coll_path("scores", season, level)).document(score_date)
     
-    # Check for existing scores to revert
     existing_meta = score_date_ref.get()
     if existing_meta.exists:
         existing_participants = score_date_ref.collection("participants").get()
-        
-        # Batch revert existing scores/attendance
         revert_batch = db.batch()
         for doc in existing_participants:
             data = doc.to_dict()
             roll_no = doc.id
             p_points = data.get("points", 0)
             p_status = data.get("status", "absent")
-            
             user_ref = users_ref.document(roll_no)
-            
-            revert_data = {
-                "totalPoints": firestore.Increment(-p_points)
-            }
+            revert_data = {"totalPoints": firestore.Increment(-p_points)}
             if p_status == "present":
                 revert_data["attendanceSummary.daysPresent"] = firestore.Increment(-1)
             else:
                 revert_data["attendanceSummary.daysAbsent"] = firestore.Increment(-1)
-            
             revert_batch.update(user_ref, revert_data)
-            # Delete old record in subcollection
             revert_batch.delete(doc.reference)
-            
         revert_batch.commit()
 
-    # Get all participants to handle missing (absent) ones in the NEW upload
     all_users = users_ref.get()
     all_roll_nos = {doc.id for doc in all_users}
-    
     uploaded_roll_nos = {str(s['rollNo']) for s in scores_data}
     missing_roll_nos = all_roll_nos - uploaded_roll_nos
 
-    # Root score document metadata
     score_date_ref.set({
         "uploadedBy": admin_email,
         "uploadedAt": firestore.SERVER_TIMESTAMP,
         "isReupload": existing_meta.exists
     }, merge=True)
 
-    # Fetch past score dates to handle retroactive absences
     all_score_docs = db.collection(get_coll_path("scores", season, level)).get()
     all_past_dates = [d.id for d in all_score_docs if d.id != score_date]
 
     batch = db.batch()
-    
-    # Process Present Participants
     for item in scores_data:
         roll_no = str(item['rollNo'])
         points = item['points']
-        remarks = item.get('remarks', "")
-        name = item.get('name') # Captured from Excel
-        
+        name = item.get('name')
         user_ref = users_ref.document(roll_no)
         participant_ref = score_date_ref.collection("participants").document(roll_no)
-        
         is_new_user = roll_no not in all_roll_nos
         past_absences = len(all_past_dates) if is_new_user else 0
-        
-        # Update User doc
         user_update_data = {
             "rollNo": roll_no,
             "totalPoints": firestore.Increment(points),
@@ -86,353 +222,153 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
                 "daysAbsent": firestore.Increment(past_absences)
             }
         }
-        if name:
-            user_update_data["name"] = name
-            
+        if name: user_update_data["name"] = name
         batch.set(user_ref, user_update_data, merge=True)
-        
-        # Record retroactive absences for new users
         if is_new_user:
             for past_date in all_past_dates:
                 past_participant_ref = db.collection(get_coll_path("scores", season, level)).document(past_date).collection("participants").document(roll_no)
-                batch.set(past_participant_ref, {
-                    "rollNo": roll_no,
-                    "points": 0,
-                    "remarks": "Added retroactively as absent",
-                    "attendance": False,
-                    "status": "absent"
-                })
-        
-        # Record daily score
-        batch.set(participant_ref, {
-            "rollNo": roll_no,
-            "points": points,
-            "remarks": remarks,
-            "attendance": True,
-            "status": "present"
-        })
+                batch.set(past_participant_ref, {"rollNo": roll_no, "points": 0, "status": "absent", "attendance": False})
+        batch.set(participant_ref, {"rollNo": roll_no, "points": points, "status": "present", "attendance": True})
 
-    # Process Absent Participants
     for roll_no in missing_roll_nos:
-        user_ref = users_ref.document(roll_no)
-        participant_ref = score_date_ref.collection("participants").document(roll_no)
-        
-        batch.set(user_ref, {
-            "rollNo": roll_no,
-            "attendanceSummary": {
-                "daysAbsent": firestore.Increment(1)
-            }
-        }, merge=True)
-        
-        batch.set(participant_ref, {
-            "rollNo": roll_no,
-            "points": 0,
-            "remarks": "N/A",
-            "attendance": False,
-            "status": "absent"
-        })
+        batch.set(users_ref.document(roll_no), {"attendanceSummary": {"daysAbsent": firestore.Increment(1)}}, merge=True)
+        batch.set(score_date_ref.collection("participants").document(roll_no), {"rollNo": roll_no, "points": 0, "status": "absent", "attendance": False})
 
     batch.commit()
     return len(uploaded_roll_nos)
 
 def is_admin(email: str) -> bool:
     if not email: return False
-    doc = db.collection(get_coll_path("admins")).document(email.lower()).get()
-    return doc.exists
+    return db.collection(get_coll_path("admins")).document(email.lower()).get().exists
 
 def get_all_admins() -> List[dict]:
-    """Fetches all administrators, ensuring email is the document ID."""
     docs = db.collection(get_coll_path("admins")).stream()
-    admins = []
-    for doc in docs:
-        d = doc.to_dict()
-        if 'email' not in d:
-            d['email'] = doc.id
-        admins.append(d)
-    return admins
+    return [{**doc.to_dict(), "email": doc.id} for doc in docs]
 
 def register_user_if_not_exists(uid: str, email: str, name: str, roll_no: str):
     user_ref = db.collection(get_coll_path("users")).document(roll_no)
     doc = user_ref.get()
-    
     if not doc.exists:
-        user_ref.set({
-            "uid": uid,
-            "email": email,
-            "name": name.upper() if name else "",
-            "rollNo": roll_no,
-            "totalPoints": 0,
-            "attendanceSummary": {"daysPresent": 0, "daysAbsent": 0},
-            "badges": [],
-            "createdAt": firestore.SERVER_TIMESTAMP
-        })
+        user_ref.set({"uid": uid, "email": email, "name": name.upper() if name else "", "rollNo": roll_no, "totalPoints": 0, "attendanceSummary": {"daysPresent": 0, "daysAbsent": 0}, "badges": [], "createdAt": firestore.SERVER_TIMESTAMP})
     else:
-        user_ref.set({
-            "uid": uid,
-            "name": name.upper() if name else doc.to_dict().get("name", ""),
-            "email": email,
-            "rollNo": roll_no
-        }, merge=True)
+        user_ref.set({"uid": uid, "name": name.upper() if name else doc.to_dict().get("name", ""), "email": email, "rollNo": roll_no}, merge=True)
 
-def get_leaderboard_for_date(score_date: str, season: str = None, level: str = None) -> List[LeaderboardEntry]:
-    scores_ref = db.collection(get_coll_path("scores", season, level)).document(score_date).collection("participants")
-    query = scores_ref.order_by("points", direction=firestore.Query.DESCENDING).stream()
-    leaderboard = []
+# --- SYNC & CACHING LOGIC ---
+
+def sync_leaderboard_to_blob() -> bool:
+    """Calculates leaderboard and curriculum snapshots, pushing them to Vercel Blob."""
+    token = os.getenv("BLOB_READ_WRITE_TOKEN")
+    if not token: return False
+
+    # 1. Fetch Current Session Info
+    from firebase_config import CURRENT_SEASON, CURRENT_LEVEL
     
-    # To avoid N+1 queries in a real production app, we could denormalize names into the daily scores.
-    # For now, we'll fetch them from the 'users' collection.
-    for doc in query:
-        data = doc.to_dict()
-        roll_no = doc.id
-        
-        from utils import clean_nan
-        
-        # Fetch name from users collection
-        user_doc = db.collection(get_coll_path("users", season, level)).document(roll_no).get()
-        user_data = user_doc.to_dict() if user_doc.exists else {}
-        name = clean_nan(user_data.get("name")) or ""
-        
-        leaderboard.append(LeaderboardEntry(
-            rollNo=roll_no, 
-            points=clean_nan(data.get("points")) or 0, 
-            name=name,
-            remarks=clean_nan(data.get("remarks")) or ""
-        ))
-    return leaderboard
+    # 2. Generate Leaderboard Snapshots
+    full_board = get_overall_leaderboard(limit=None)
+    ranked_full = [{"rollNo": e.rollNo, "name": e.name, "points": e.points, "rank": i+1, "leetcode_username": e.leetcode_username} for i, e in enumerate(full_board)]
+    top_10 = ranked_full[:10]
+    
+    # 3. Generate Curriculum Snapshot (Latest on top)
+    curr_docs = get_all_curriculum(CURRENT_SEASON, CURRENT_LEVEL)
+    
+    # 4. Generate Daily Reminders Snapshot (Only for users due today)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    reminder_docs = db.collection("reminders").document(today_str).collection("participants").stream()
+    today_reminders = [doc.to_dict() for doc in reminder_docs]
 
-def get_user_score_history(roll_no: str, season: str = None, level: str = None) -> List[UserHistoryEntry]:
-    history = []
-    scores_docs = db.collection(get_coll_path("scores", season, level)).stream()
-    for date_doc in scores_docs:
-        date_id = date_doc.id
-        participant_ref = db.collection(get_coll_path("scores", season, level)).document(date_id).collection("participants").document(roll_no).get()
-        if participant_ref.exists:
-            data = participant_ref.to_dict()
-            from utils import clean_nan
-            history.append(UserHistoryEntry(
-                date=date_id,
-                points=clean_nan(data.get("points")) or 0,
-                remarks=clean_nan(data.get("remarks")) or "",
-                attendance=data.get("attendance", False),
-                status=data.get("status", "absent")
-            ))
-    history.sort(key=lambda x: x.date, reverse=True)
-    return history
+    files = {
+        f"leaderboard/{CURRENT_SEASON}/{CURRENT_LEVEL}/top10.json": top_10,
+        "leaderboard/latest_top10.json": top_10,
+        "leaderboard/latest_full.json": ranked_full,
+        f"curriculum/{CURRENT_SEASON}/{CURRENT_LEVEL}/snapshot.json": curr_docs,
+        "reminders/today_snapshot.json": today_reminders
+    }
+
+    success = True
+    uploaded_urls = {}
+    for path, data in files.items():
+        upload_url = f"https://blob.vercel-storage.com/{path}?access=public" 
+        req = urllib.request.Request(upload_url, data=json.dumps(data).encode('utf-8'), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="PUT")
+        try:
+            with urllib.request.urlopen(req) as response:
+                res_body = json.loads(response.read().decode('utf-8'))
+                uploaded_urls[path] = res_body.get("url")
+        except: success = False
+            
+    # 3. Update Session Metadata with new Blob URLs
+    if success:
+        try:
+            db.collection("seasons").document(CURRENT_SEASON).collection("levels").document(CURRENT_LEVEL).set({
+                "top10_url": uploaded_urls.get("leaderboard/latest_top10.json"),
+                "full_url": uploaded_urls.get("leaderboard/latest_full.json"),
+                "curriculum_url": uploaded_urls.get(f"curriculum/{CURRENT_SEASON}/{CURRENT_LEVEL}/snapshot.json"),
+                "last_synced": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+        except: pass
+            
+    return success
+
+# Helper for Edge Config sync (existing)
+def sync_leaderboard_to_edge_config() -> bool:
+    return sync_leaderboard_to_blob() # Re-use the consolidated blob sync
+
+def get_edge_leaderboard(key: str) -> Any:
+    config_id = os.getenv("EDGE_CONFIG_ID")
+    token = os.getenv("VERCEL_API_TOKEN")
+    if not config_id or not token: return []
+    url = f"https://api.vercel.com/v1/edge-config/{config_id}/item/{key}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data.get("value") if isinstance(data, dict) and "value" in data else data
+    except: return None
 
 def get_overall_leaderboard(limit: Optional[int] = 50, season: str = None, level: str = None) -> List[LeaderboardEntry]:
-    # We should exclude users who are also admins if they accidentally exist in users collection
-    admins = {a.get("email").lower() for a in get_all_admins() if a.get("email")}
-    
+    from utils import clean_nan
     users_ref = db.collection(get_coll_path("users", season, level))
     query = users_ref.order_by("totalPoints", direction=firestore.Query.DESCENDING).stream()
-    
     leaderboard = []
     count = 0
     for doc in query:
         if limit is not None and count >= limit: break
         data = doc.to_dict()
-        email = data.get("email", "").lower()
-        if email in admins or doc.id.lower() in admins: continue # Skip admins in leaderboard
-        
-        from utils import clean_nan
         leaderboard.append(LeaderboardEntry(
             rollNo=doc.id, 
             points=clean_nan(data.get("totalPoints")) or 0, 
-            name=clean_nan(data.get("name")) or "",
-            remarks=""
+            name=clean_nan(data.get("name")) or "", 
+            remarks="",
+            leetcode_username=data.get("leetcode_username")
         ))
         count += 1
     return leaderboard
+
+def get_leaderboard_for_date(score_date: str, season: str = None, level: str = None) -> List[LeaderboardEntry]:
+    from utils import clean_nan
+    scores_ref = db.collection(get_coll_path("scores", season, level)).document(score_date).collection("participants")
+    query = scores_ref.order_by("points", direction=firestore.Query.DESCENDING).stream()
+    leaderboard = []
+    for doc in query:
+        data = doc.to_dict()
+        user_data = db.collection(get_coll_path("users", season, level)).document(doc.id).get().to_dict() or {}
+        leaderboard.append(LeaderboardEntry(rollNo=doc.id, points=clean_nan(data.get("points")) or 0, name=clean_nan(user_data.get("name")) or "", remarks=clean_nan(data.get("remarks")) or ""))
+    return leaderboard
+
+def get_user_score_history(roll_no: str, season: str = None, level: str = None) -> List[UserHistoryEntry]:
+    from utils import clean_nan
+    history = []
+    scores_docs = db.collection(get_coll_path("scores", season, level)).stream()
+    for date_doc in scores_docs:
+        part_ref = db.collection(get_coll_path("scores", season, level)).document(date_doc.id).collection("participants").document(roll_no).get()
+        if part_ref.exists:
+            data = part_ref.to_dict()
+            history.append(UserHistoryEntry(date=date_doc.id, points=clean_nan(data.get("points")) or 0, remarks=clean_nan(data.get("remarks")) or "", attendance=data.get("attendance", False), status=data.get("status", "absent")))
+    history.sort(key=lambda x: x.date, reverse=True)
+    return history
 
 def get_program_details(program_id: str, season: str = None, level: str = None):
     doc = db.collection(get_coll_path("programs", season, level)).document(program_id).get()
     return doc.to_dict() if doc.exists else None
 
 def check_scores_exist(score_date: str, season: str = None, level: str = None) -> bool:
-    """Checks if scores for a specific date have been uploaded."""
-    doc = db.collection(get_coll_path("scores", season, level)).document(score_date).get()
-    return doc.exists
-
-def sync_leaderboard_to_blob() -> bool:
-    """
-    Calculates leaderboard and pushes Top 10 and Full list to Vercel Blob.
-    Naming convention: 
-    - leaderboard/{season}/{level}/top10.json
-    - leaderboard/latest_top10.json
-    """
-    token = os.getenv("BLOB_READ_WRITE_TOKEN")
-    if not token:
-        print("Missing BLOB_READ_WRITE_TOKEN")
-        return False
-
-    full_board = get_overall_leaderboard(limit=None)
-    ranked_full = []
-    for idx, entry in enumerate(full_board):
-        ranked_full.append({
-            "rollNo": entry.rollNo,
-            "name": entry.name,
-            "points": entry.points,
-            "rank": idx + 1
-        })
-    
-    top_10 = ranked_full[:10]
-    
-    from firebase_config import CURRENT_SEASON, CURRENT_LEVEL
-    
-    # Files to upload
-    files = {
-        f"leaderboard/{CURRENT_SEASON}/{CURRENT_LEVEL}/top10.json": top_10,
-        "leaderboard/latest_top10.json": top_10,
-        "leaderboard/latest_full.json": ranked_full # Admin search
-    }
-
-    import urllib.request
-    import json
-
-    success = True
-    uploaded_urls = {}
-    for path, data in files.items():
-        upload_url = f"https://blob.vercel-storage.com/{path}?access=public" 
-        
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        
-        req = urllib.request.Request(
-            upload_url, 
-            data=json.dumps(data).encode('utf-8'), 
-            headers=headers, 
-            method="PUT"
-        )
-        
-        try:
-            with urllib.request.urlopen(req) as response:
-                res_body = json.loads(response.read().decode('utf-8'))
-                uploaded_urls[path] = res_body.get("url")
-                print(f"Uploaded: {path} -> {res_body.get('url')}")
-        except Exception as e:
-            print(f"Failed to upload {path}: {e}")
-            success = False
-            
-    # Update Session Metadata in Firestore for optimized historical access
-    if success:
-        try:
-            session_ref = db.collection("seasons").document(CURRENT_SEASON).collection("levels").document(CURRENT_LEVEL)
-            session_ref.set({
-                "top10_url": uploaded_urls.get("leaderboard/latest_top10_url") or uploaded_urls.get("leaderboard/latest_top10.json"),
-                "full_url": uploaded_urls.get("leaderboard/latest_full_url") or uploaded_urls.get("leaderboard/latest_full.json"),
-                "last_synced": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-            print("Session metadata updated in Firestore")
-        except Exception as e:
-            print(f"Failed to update session metadata: {e}")
-
-    # Update Edge Config with the LATEST URLs so frontend can find them
-    if success:
-        config_id = os.getenv("EDGE_CONFIG_ID")
-        vercel_token = os.getenv("VERCEL_API_TOKEN")
-        if config_id and vercel_token:
-            url = f"https://api.vercel.com/v1/edge-config/{config_id}/items"
-            payload = {
-                "items": [
-                    { "operation": "upsert", "key": "latest_top10_url", "value": uploaded_urls.get("leaderboard/latest_top10.json") },
-                    { "operation": "upsert", "key": "latest_full_url", "value": uploaded_urls.get("leaderboard/latest_full.json") }
-                ]
-            }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), 
-                                       headers={"Authorization": f"Bearer {vercel_token}", "Content-Type": "application/json"},
-                                       method="PATCH")
-            try:
-                with urllib.request.urlopen(req) as response: pass
-            except: print("Failed to update Edge Config with Blob URLs")
-            
-    return success
-
-def sync_leaderboard_to_edge_config() -> bool:
-    """Calculates full leaderboard and pushes top 10 & full to Edge Config"""
-    full_board = get_overall_leaderboard(limit=None)
-    
-    ranked_full = []
-    for idx, entry in enumerate(full_board):
-        ranked_full.append({
-            "rollNo": entry.rollNo,
-            "name": entry.name,
-            "points": entry.points,
-            "rank": idx + 1
-        })
-        
-    top_10 = ranked_full[:10]
-    
-    token = os.getenv("VERCEL_API_TOKEN")
-    config_id = os.getenv("EDGE_CONFIG_ID")
-    team_id = os.getenv("TEAM_ID")
-    
-    if not token or not config_id:
-        print("Missing VERCEL_API_TOKEN or EDGE_CONFIG_ID")
-        return False
-        
-    url = f"https://api.vercel.com/v1/edge-config/{config_id}/items"
-    if team_id:
-        url += f"?teamId={team_id}"
-        
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "items": [
-            {
-                "operation": "upsert",
-                "key": "leaderboard_top10",
-                "value": top_10
-            },
-            {
-                "operation": "upsert",
-                "key": "leaderboard_full",
-                "value": ranked_full[:100]
-            }
-        ]
-    }
-    
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method="PATCH")
-    try:
-        with urllib.request.urlopen(req) as response:
-            response.read()
-            return True
-    except urllib.error.URLError as e:
-        print(f"Failed to update Edge Config: {e}")
-        if hasattr(e, 'read'):
-            print(e.read())
-        return False
-
-def get_edge_leaderboard(key: str) -> list:
-    """Fetch a value from Edge Config via Vercel REST API."""
-    config_id = os.getenv("EDGE_CONFIG_ID")
-    token = os.getenv("VERCEL_API_TOKEN")
-    team_id = os.getenv("TEAM_ID")
-    
-    if not config_id or not token:
-        print("EDGE_CONFIG_ID or VERCEL_API_TOKEN not set, skipping Edge Config read")
-        return []
-    
-    url = f"https://api.vercel.com/v1/edge-config/{config_id}/item/{key}"
-    if team_id:
-        url += f"?teamId={team_id}"
-    
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            # Vercel returns {"value": [...]} for individual item reads
-            if isinstance(data, dict) and "value" in data:
-                return data["value"]
-            return data if isinstance(data, list) else []
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8') if hasattr(e, 'read') else ''
-        print(f"Edge Config read HTTP error {e.code}: {body}")
-        return []
-    except Exception as e:
-        print(f"Failed to read Edge Config: {e}")
-        return []
+    return db.collection(get_coll_path("scores", season, level)).document(score_date).get().exists

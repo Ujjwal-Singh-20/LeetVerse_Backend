@@ -35,7 +35,7 @@ jobs:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
           EDGE_CONFIG_ID: ${{ secrets.EDGE_CONFIG_ID }}
-          TEAM_ID: ${{ secrets.TEAM_ID }}
+          # TEAM_ID: ${{ secrets.TEAM_ID }}
           CURRENT_SEASON: ${{ vars.CURRENT_SEASON || 'season1' }}
           CURRENT_LEVEL: ${{ vars.CURRENT_LEVEL || 'level1' }}
         run: |

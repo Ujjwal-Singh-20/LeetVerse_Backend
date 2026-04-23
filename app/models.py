@@ -10,6 +10,7 @@ class UserBase(BaseModel):
     rollNo: str
     name: str
     email: EmailStr
+    leetcode_username: Optional[str] = None
     role: str = "participant"
     totalPoints: int = 0
     attendanceSummary: AttendanceSummary = AttendanceSummary()
@@ -33,6 +34,7 @@ class LeaderboardEntry(BaseModel):
     points: int
     name: Optional[str] = ""
     remarks: Optional[str] = ""
+    leetcode_username: Optional[str] = None
 
 class UserHistoryEntry(BaseModel):
     date: str
@@ -40,6 +42,31 @@ class UserHistoryEntry(BaseModel):
     remarks: Optional[str] = ""
     attendance: bool
     status: str
+
+class CurriculumEntry(BaseModel):
+    date: str
+    class_questions: List[str] = [] # slugs
+    assigned_questions: List[str] = [] # slugs
+
+class ExtraPractice(BaseModel):
+    rollNo: str
+    date: str
+    slugs: List[str] = []
+
+class QuestionValidationRequest(BaseModel):
+    rollNo: str
+    slug: str
+    hint_used: bool
+    solution_seen: bool
+    self_solved: bool
+    time_taken_mins: int
+
+class Reminder(BaseModel):
+    rollNo: str
+    slug: str
+    remind_date: str
+    status: str = "pending" # "pending" | "done" | "missed"
+    rs_score: int
 
 class UploadResponse(BaseModel):
     message: str

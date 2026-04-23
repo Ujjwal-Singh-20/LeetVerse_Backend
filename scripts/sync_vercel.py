@@ -23,21 +23,9 @@ def run_sync():
         print(f"ERROR: Missing environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    print("\n[1/2] Syncing to Vercel Blob...")
-    blob_success = sync_leaderboard_to_blob()
-    if blob_success:
-        print("SUCCESS: Leaderboard JSONs pushed to Vercel Blob.")
-    else:
-        print("FAILED: Blob sync failed. Check tokens and logs above.")
-
-    print("\n[2/2] Syncing to Vercel Edge Config...")
-    edge_success = sync_leaderboard_to_edge_config()
-    if edge_success:
-        print("SUCCESS: Edge Config updated with latest data/URLs.")
-    else:
-        print("FAILED: Edge Config sync failed.")
-
-    if blob_success and edge_success:
+    print("\n[1/1] Syncing to Vercel (Blob + Edge Config)...")
+    success = sync_leaderboard_to_blob()
+    if success:
         print("\n>>> ALL SYNC OPERATIONS COMPLETED SUCCESSFULLY.")
     else:
         print("\n>>> SYNC COMPLETED WITH ERRORS.")
