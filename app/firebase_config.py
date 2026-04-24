@@ -1,14 +1,33 @@
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import os
+import json
+import base64
 from dotenv import load_dotenv
 
 load_dotenv()
 
-cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "serviceAccountKey.json")
+def _load_firebase_credentials():
+    # Prefer inline JSON from env in CI to avoid writing/parsing temp files.
+    raw_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if raw_json:
+        try:
+            return credentials.Certificate(json.loads(raw_json))
+        except json.JSONDecodeError:
+            # Support base64-encoded JSON secrets as a fallback format.
+            try:
+                decoded = base64.b64decode(raw_json).decode("utf-8")
+                return credentials.Certificate(json.loads(decoded))
+            except Exception as exc:
+                raise ValueError(
+                    "Invalid FIREBASE_SERVICE_ACCOUNT_JSON. Provide raw JSON or base64-encoded JSON."
+                ) from exc
+
+    cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "serviceAccountKey.json")
+    return credentials.Certificate(cred_path)
 
 if not firebase_admin._apps:
-    cred = credentials.Certificate(cred_path)
+    cred = _load_firebase_credentials()
     firebase_admin.initialize_app(cred)
 
 
