@@ -1,4 +1,4 @@
-name: Refresh Leaderboard Snapshots (Blob Sync)
+name: Daily System Sync (Leaderboard + Curriculum)
 on:
   schedule:
     - cron: '30 18 * * *'   # 18:30 UTC = midnight IST
@@ -8,8 +8,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Leaderboard Cron Endpoint
+      - name: Ping System Sync Endpoint
         run: |
           curl -s -X POST \
-            "${{ secrets.BACKEND_URL }}/cron/update-leaderboard" \
+            "${{ secrets.BACKEND_URL }}/cron/sync-vercel" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

@@ -4,6 +4,7 @@ from typing import List
 from datetime import date
 import os
 from models import UploadResponse, LeaderboardEntry, UserHistoryEntry, CurriculumEntry, ExtraPractice, QuestionValidationRequest
+from firebase_admin import firestore
 from utils import parse_excel_scores
 from crud import (
     update_bulk_scores_atomic, get_leaderboard_for_date, get_user_score_history, 
@@ -564,10 +565,38 @@ async def remove_curriculum(date_str: str, admin: dict = Depends(get_admin_user)
 async def log_extra_practice(roll_no: str, date_str: str, slug: str, user: dict = Depends(get_current_user)):
     # Basic security check: user can only log for themselves unless admin
     if user.get("role") != "admin" and user.get("rollNo") != roll_no:
-        # We need rollNo in user dict from get_current_user. Let's ensure auth handles this.
-        pass 
+        raise HTTPException(status_code=403, detail="Forbidden. You can only log practice for yourself.")
+        
+    # 1. Get User Profile for leetcode_username
+    user_doc = db.collection(get_coll_path("users", CURRENT_SEASON, CURRENT_LEVEL)).document(roll_no).get()
+    if not user_doc.exists:
+        raise HTTPException(status_code=404, detail="User profile not found in database.")
+        
+    username = user_doc.to_dict().get("leetcode_username")
+    if not username:
+        raise HTTPException(status_code=400, detail="LeetCode username not linked to profile. Please update your settings.")
+        
+    # 2. Verify recent accepted submissions on LeetCode
+    from leetcode_handler import fetch_recent_accepted_submissions
+    try:
+        lc_data = await fetch_recent_accepted_submissions(username)
+        recent_ac = lc_data.get("recentAcSubmissionList", [])
+        is_verified = any(s['titleSlug'] == slug for s in recent_ac)
+        
+        if not is_verified:
+            raise HTTPException(status_code=400, detail="Completion not verified. Ensure your submission is 'Accepted' on LeetCode and try again.")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to communicate with LeetCode API: {str(e)}")
+
     add_extra_practice(roll_no, date_str, slug, CURRENT_SEASON, CURRENT_LEVEL)
-    return {"status": "success"}
+    
+    # 3. Mark as completed in user profile for easy UI tracking
+    db.collection(get_coll_path("users", CURRENT_SEASON, CURRENT_LEVEL)).document(roll_no).update({
+        "completed_slugs": firestore.ArrayUnion([slug])
+    })
+    
+    return {"status": "success", "message": "Extra practice verified and logged successfully!"}
 
 @app.get("/question/extra/{roll_no}")
 async def fetch_extra_practice(roll_no: str, user: dict = Depends(get_current_user)):

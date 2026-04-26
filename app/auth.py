@@ -1,4 +1,4 @@
-from fastapi import Header, HTTPException, Depends, Security
+from fastapi import Header, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from firebase_admin import auth
 from firebase_config import db
@@ -7,7 +7,7 @@ import os
 
 security = HTTPBearer()
 
-async def verify_firebase_token(res: HTTPAuthorizationCredentials = Security(security)):
+async def verify_firebase_token(request: Request, res: HTTPAuthorizationCredentials = Security(security)):
     """
     Verifies Firebase ID Token, checks for @kiit.ac.in domain,
     and determines the user role.
@@ -52,7 +52,9 @@ async def verify_firebase_token(res: HTTPAuthorizationCredentials = Security(sec
         })
             
         # 7. Register Participant (skip if admin)
-        register_user_if_not_exists(uid, email, name, roll_no)
+        season = request.query_params.get("season")
+        level = request.query_params.get("level")
+        register_user_if_not_exists(uid, email, name, roll_no, season, level)
         
         # Attach our metadata to the token dict for this specific request
         decoded_token.update({

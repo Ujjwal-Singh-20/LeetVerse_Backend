@@ -1,9 +1,6 @@
 name: Daily Vercel Sync
 
 on:
-  schedule:
-    # Runs every day at 00:00 UTC (5:30 AM IST)
-    - cron: '0 0 * * *'
   workflow_dispatch:
     # Allows manual triggering from the Actions tab
 

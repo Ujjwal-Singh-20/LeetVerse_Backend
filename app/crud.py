@@ -246,8 +246,8 @@ def get_all_admins() -> List[dict]:
     docs = db.collection(get_coll_path("admins")).stream()
     return [{**doc.to_dict(), "email": doc.id} for doc in docs]
 
-def register_user_if_not_exists(uid: str, email: str, name: str, roll_no: str):
-    user_ref = db.collection(get_coll_path("users")).document(roll_no)
+def register_user_if_not_exists(uid: str, email: str, name: str, roll_no: str, season: str = None, level: str = None):
+    user_ref = db.collection(get_coll_path("users", season, level)).document(roll_no)
     doc = user_ref.get()
     if not doc.exists:
         user_ref.set({"uid": uid, "email": email, "name": name.upper() if name else "", "rollNo": roll_no, "totalPoints": 0, "attendanceSummary": {"daysPresent": 0, "daysAbsent": 0}, "badges": [], "createdAt": firestore.SERVER_TIMESTAMP})
