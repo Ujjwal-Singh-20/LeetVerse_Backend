@@ -132,6 +132,34 @@ async def get_profile(
             "data": sanitize_dict(user_doc.to_dict())
         }
 
+@app.get("/profile/check-leetcode")
+async def check_leetcode_username(
+    season: str = Query(None),
+    level: str = Query(None),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Dedicated endpoint to check if the current user has a LeetCode username set,
+    even if they are an admin.
+    """
+    email = user.get("email", "").lower()
+    roll_no = user.get("rollNo")
+    
+    # If admin, derive roll_no from email if it's a student email
+    if roll_no == "ADMIN" and "@kiit.ac.in" in email:
+        roll_no = email.split("@")[0].upper()
+        
+    if not roll_no or roll_no == "ADMIN":
+        return {"has_leetcode_username": False, "username": None}
+        
+    doc = db.collection(get_coll_path("users", season, level)).document(roll_no).get()
+    if doc.exists:
+        lc_username = doc.to_dict().get("leetcode_username")
+        if lc_username:
+            return {"has_leetcode_username": True, "username": lc_username}
+            
+    return {"has_leetcode_username": False, "username": None}
+
 @app.patch("/profile")
 async def update_profile(
     data: dict,
