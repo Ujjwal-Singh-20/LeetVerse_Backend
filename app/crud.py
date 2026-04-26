@@ -8,6 +8,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+from utils import json_serial
 
 # --- CURRICULUM MANAGEMENT ---
 
@@ -155,7 +156,7 @@ def archive_session_to_edge(season: str, level: str) -> bool:
         {"operation": "upsert", "key": archive_key, "value": top_10}
     ]}
     
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Authorization": f"Bearer {vercel_token}", "Content-Type": "application/json"}, method="PATCH")
+    req = urllib.request.Request(url, data=json.dumps(payload, default=json_serial).encode('utf-8'), headers={"Authorization": f"Bearer {vercel_token}", "Content-Type": "application/json"}, method="PATCH")
     try:
         with urllib.request.urlopen(req) as response:
             return response.status in [200, 201, 202]
@@ -288,7 +289,7 @@ def sync_leaderboard_to_blob() -> bool:
     uploaded_urls = {}
     for path, data in files.items():
         upload_url = f"https://blob.vercel-storage.com/{path}?access=public" 
-        req = urllib.request.Request(upload_url, data=json.dumps(data).encode('utf-8'), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="PUT")
+        req = urllib.request.Request(upload_url, data=json.dumps(data, default=json_serial).encode('utf-8'), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="PUT")
         try:
             with urllib.request.urlopen(req) as response:
                 res_body = json.loads(response.read().decode('utf-8'))

@@ -8,6 +8,12 @@ def clean_nan(val):
         return None
     return val
 
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 def sanitize_dict(d: dict) -> dict:
     """Recursively removes NaN values from dictionaries."""
     sanitized = {}
