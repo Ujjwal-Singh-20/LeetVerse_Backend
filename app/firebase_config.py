@@ -8,7 +8,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def _load_firebase_credentials():
-    # Prefer inline JSON from env in CI to avoid writing/parsing temp files.
+    # 1. Render Secret File Support (Priority for Render Deployments)
+    render_secret_path = "/etc/secrets/leetverse-a7324-firebase-adminsdk-fbsvc-5eedee1ba1.json"
+    if os.path.exists(render_secret_path):
+        return credentials.Certificate(render_secret_path)
+
+    # 2. Prefer inline JSON from env in CI to avoid writing/parsing temp files.
     raw_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
     if raw_json:
         try:
@@ -23,7 +28,22 @@ def _load_firebase_credentials():
                     "Invalid FIREBASE_SERVICE_ACCOUNT_JSON. Provide raw JSON or base64-encoded JSON."
                 ) from exc
 
-    cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "serviceAccountKey.json")
+    # 3. Local / Env Variable Fallback
+    cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "leetverse-a7324-firebase-adminsdk-fbsvc-5eedee1ba1.json")
+    
+    # Check if the user specified a filename via env var, and see if it's in /etc/secrets
+    if cred_path.startswith("./"):
+        filename = cred_path[2:]
+        alt_secret_path = f"/etc/secrets/{filename}"
+        if os.path.exists(alt_secret_path):
+            return credentials.Certificate(alt_secret_path)
+            
+    if not os.path.exists(cred_path):
+        if os.path.exists("serviceAccountKey.json"):
+            cred_path = "serviceAccountKey.json" # Legacy fallback
+        elif os.path.exists("leetverse-a7324-firebase-adminsdk-fbsvc-5eedee1ba1.json"):
+            cred_path = "leetverse-a7324-firebase-adminsdk-fbsvc-5eedee1ba1.json"
+        
     return credentials.Certificate(cred_path)
 
 if not firebase_admin._apps:
