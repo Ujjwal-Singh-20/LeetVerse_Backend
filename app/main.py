@@ -636,3 +636,22 @@ async def get_practice_progress(admin: dict = Depends(get_admin_user)):
     from crud import get_all_practice_progress
     return get_all_practice_progress(season, level)
 
+@app.get("/admin/export-practice-progress")
+async def export_practice_progress(date: str = None, admin: dict = Depends(get_admin_user)):
+    season = admin.get("season", CURRENT_SEASON)
+    level = admin.get("level", CURRENT_LEVEL)
+    from crud import export_practice_to_excel
+    from fastapi.responses import StreamingResponse
+    
+    output = export_practice_to_excel(season, level, date)
+    
+    suffix = f"_{date}" if date else ""
+    filename = f"practice_report_{season}_{level}{suffix}.xlsx"
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+

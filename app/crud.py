@@ -464,3 +464,61 @@ def get_all_practice_progress(season: str, level: str):
         "progress": progress_by_date
     }
 
+def export_practice_to_excel(season: str, level: str, date_str: str = None):
+    """Generates an Excel file from practice progress data."""
+    import pandas as pd
+    import io
+    
+    # Reuse the aggregation logic
+    progress_data = get_all_practice_progress(season, level)
+    
+    if date_str and date_str in progress_data["dates"]:
+        dates = [date_str]
+    else:
+        dates = progress_data["dates"]
+
+    
+    # Group by user instead of date for the spreadsheet
+    user_rows = {}
+    
+    for date_str in dates:
+        users_for_date = progress_data["progress"][date_str]
+        for u in users_for_date:
+            roll_no = u["rollNo"]
+            if roll_no not in user_rows:
+                user_rows[roll_no] = {
+                    "Roll No": roll_no,
+                    "Name": u["name"],
+                    "Leetcode Username": u["leetcode_username"],
+                    "Total Completed (All Time)": u["total_completed"]
+                }
+            
+            # Add date-specific columns
+            class_total = u["class_total"]
+            if class_total > 0:
+                done = len(u["class_done"])
+                missing = u["class_missing"]
+                user_rows[roll_no][f"{date_str} Class ({class_total})"] = f"{done}/{class_total} Done" + (f" | Missing: {', '.join(missing)}" if missing else "")
+            
+            assign_total = u["assign_total"]
+            if assign_total > 0:
+                done = len(u["assign_done"])
+                missing = u["assign_missing"]
+                user_rows[roll_no][f"{date_str} Assigned ({assign_total})"] = f"{done}/{assign_total} Done" + (f" | Missing: {', '.join(missing)}" if missing else "")
+            
+            extras = u["extra"]
+            if extras:
+                user_rows[roll_no][f"{date_str} Extra"] = ", ".join(extras)
+            else:
+                user_rows[roll_no][f"{date_str} Extra"] = ""
+
+    df = pd.DataFrame(list(user_rows.values()))
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Practice Progress')
+    
+    output.seek(0)
+    return output
+
+
