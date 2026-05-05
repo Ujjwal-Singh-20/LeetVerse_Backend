@@ -1,0 +1,4 @@
+cd C:\Users\KIIT\Documents\GitHub\LeetVerse_Backend\
+docker build -t leetverse_backend .
+docker tag leetverse_backend ujjwalsingh20/leetverse_backend:latest    
+docker push ujjwalsingh20/leetverse_backend:latest

@@ -57,18 +57,29 @@ def get_user_extra_practice(roll_no: str, season: str = None, level: str = None)
 
 # --- REMINDERS & SPACED REPETITION ---
 
-def calculate_rs_and_date(req: QuestionValidationRequest) -> tuple:
-    """Calculates Retention Score and Reminder Date based on performance."""
+def calculate_rs_and_date(req: QuestionValidationRequest, difficulty: str = "Medium") -> tuple:
+    """Calculates Retention Score and Reminder Date based on performance and difficulty."""
     rs = 5
     rs += 3 if req.self_solved else 0
     rs += -2 if req.hint_used else 2
     rs += -3 if req.solution_seen else 2
     rs += 2 if req.time_taken_mins < 30 else -2
     
+    # Base intervals
     if rs <= 4: interval = 3
     elif rs <= 7: interval = 7
     elif rs <= 9: interval = 14
     else: interval = 21
+
+    # Difficulty Adjustments
+    if difficulty == "Easy":
+        if rs <= 6: # Struggling with Easy
+            interval = max(1, interval - 2) 
+        elif rs >= 10: # Mastered Easy
+            interval += 7
+    elif difficulty == "Hard":
+        if rs <= 6: # Struggling with Hard (Expected, give a bit more time to process)
+            interval = max(3, interval + 2)
     
     remind_date = (datetime.now() + timedelta(days=interval)).strftime("%Y-%m-%d")
     return rs, remind_date
@@ -85,19 +96,31 @@ async def verify_and_schedule_reminder(req: QuestionValidationRequest, season: s
     if not username:
         return {"error": "LeetCode username not linked to profile. Please update your settings."}
     
-    # 2. Verify recent accepted submissions on LeetCode
+    # 2. Verify recent accepted submissions on LeetCode and get difficulty
+    difficulty = "Medium"
     try:
-        lc_data = await fetch_recent_accepted_submissions(username)
+        from leetcode_handler import fetch_recent_accepted_submissions, fetch_problem
+        
+        import asyncio
+        # We need both: verification and difficulty
+        lc_data, prob_data = await asyncio.gather(
+            fetch_recent_accepted_submissions(username),
+            fetch_problem(req.slug)
+        )
+        
         recent_ac = lc_data.get("recentAcSubmissionList", [])
         is_verified = any(s['titleSlug'] == req.slug for s in recent_ac)
         
         if not is_verified:
             return {"error": "Completion not verified. Ensure your submission is 'Accepted' on LeetCode and try again."}
+            
+        difficulty = prob_data.get("question", {}).get("difficulty", "Medium")
+        
     except Exception as e:
         return {"error": f"Failed to verify with LeetCode: {str(e)}"}
     
     # 3. Calculate RS and initial Remind Date
-    rs, remind_date = calculate_rs_and_date(req)
+    rs, remind_date = calculate_rs_and_date(req, difficulty)
     
     # 4. Handle Staggering logic (Avoid reminder overload on a single day)
     final_remind_date = remind_date
@@ -373,3 +396,71 @@ def get_program_details(program_id: str, season: str = None, level: str = None):
 
 def check_scores_exist(score_date: str, season: str = None, level: str = None) -> bool:
     return db.collection(get_coll_path("scores", season, level)).document(score_date).get().exists
+
+def get_all_practice_progress(season: str, level: str):
+    """Aggregates all users' practice progress by date."""
+    # 1. Fetch Curriculum
+    curr_docs = db.collection(get_coll_path("curriculum", season, level)).order_by("date").stream()
+    curriculum = {}
+    dates = []
+    for doc in curr_docs:
+        data = doc.to_dict()
+        curriculum[doc.id] = data
+        dates.append(doc.id)
+        
+    # 2. Fetch Users
+    users_docs = db.collection(get_coll_path("users", season, level)).stream()
+    
+    progress_by_date = {d: [] for d in dates}
+    
+    for doc in users_docs:
+        u = doc.to_dict()
+        roll_no = u.get("rollNo")
+        if not roll_no or roll_no == "ADMIN":
+            continue
+            
+        completed_slugs = set(u.get("completed_slugs", []))
+        
+        # Fetch extra practice
+        extra_docs = db.collection(get_coll_path("users", season, level)).document(roll_no).collection("extra_practice").stream()
+        extra_practice = {}
+        for edoc in extra_docs:
+            extra_practice[edoc.id] = edoc.to_dict().get("slugs", [])
+            
+        user_base_info = {
+            "rollNo": roll_no,
+            "name": u.get("name", ""),
+            "leetcode_username": u.get("leetcode_username", "NOT_LINKED"),
+            "total_completed": len(completed_slugs)
+        }
+        
+        for date_str in dates:
+            c_data = curriculum[date_str]
+            class_qs = set(c_data.get("class_questions", []))
+            assign_qs = set(c_data.get("assigned_questions", []))
+            
+            done_class = list(class_qs.intersection(completed_slugs))
+            missing_class = list(class_qs - completed_slugs)
+            
+            done_assign = list(assign_qs.intersection(completed_slugs))
+            missing_assign = list(assign_qs - completed_slugs)
+            
+            extras = extra_practice.get(date_str, [])
+            
+            progress_by_date[date_str].append({
+                **user_base_info,
+                "class_done": done_class,
+                "class_missing": missing_class,
+                "class_total": len(class_qs),
+                "assign_done": done_assign,
+                "assign_missing": missing_assign,
+                "assign_total": len(assign_qs),
+                "extra": extras
+            })
+            
+    return {
+        "dates": dates,
+        "curriculum": curriculum,
+        "progress": progress_by_date
+    }
+

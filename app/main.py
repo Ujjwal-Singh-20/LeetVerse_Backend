@@ -628,3 +628,11 @@ async def fetch_reminders(roll_no: str, date_str: str, user: dict = Depends(get_
 
     # 2. Fallback to realtime DB query
     return get_daily_reminders(roll_no, date_str)
+
+@app.get("/admin/practice-progress")
+async def get_practice_progress(admin: dict = Depends(get_admin_user)):
+    season = admin.get("season", CURRENT_SEASON)
+    level = admin.get("level", CURRENT_LEVEL)
+    from crud import get_all_practice_progress
+    return get_all_practice_progress(season, level)
+
