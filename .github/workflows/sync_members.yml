@@ -2,6 +2,8 @@ name: Sync Members to Vercel Blob
 
 # for updating member details, first download the excel, then run the script to update db, then run this workflow via giithub manually
 
+# ALSO MANUALLY UPDATE BTHE DOCKER IMAGE AND RESTART RENDER SERVICE
+
 on:
   workflow_dispatch:
   # schedule:

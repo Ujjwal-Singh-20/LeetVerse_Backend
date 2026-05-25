@@ -62,37 +62,37 @@ def update_members_from_excel(excel_path):
     
     for index, row in df.iterrows():
         try:
-            domain = clean_value(row.get('DOMAIN', ''))
+            domain_cell = clean_value(row.get('DOMAIN', ''))
+            # Split by comma to support multiple domains
+            domains = [d.strip() for d in domain_cell.split(',') if d.strip()]
             name = clean_value(row.get('NAME', '')).upper()
             roll_no = clean_value(row.get('ROLL NUMBER', ''))
-            
-            if not domain or not name or not roll_no:
+
+            if not domains or not name or not roll_no:
                 continue
-            
-            # Use domain as document ID. Replace spaces with hyphens, or just use it raw. Let's keep it raw for exact match or standardize.
-            # E.g., "Web Dev" -> "Web Dev"
-            domain_id = domain.strip()
-            
-            # Ensure the domain document exists with a name field
-            if domain_id not in domains_processed:
-                domain_ref = db.collection('members').document(domain_id)
-                batch.set(domain_ref, {'name': domain_id}, merge=True)
-                domains_processed.add(domain_id)
+
+            for domain_id in domains:
+                # Ensure the domain document exists with a name field
+                if domain_id not in domains_processed:
+                    domain_ref = db.collection('members').document(domain_id)
+                    batch.set(domain_ref, {'name': domain_id}, merge=True)
+                    domains_processed.add(domain_id)
+                    batch_count += 1
+
+                person_ref = db.collection('members').document(domain_id).collection('persons').document(roll_no)
+
+                doc_data = {
+                    "name": name,
+                    "github": sanitize_link(row.get('Github Link', '')),
+                    "instagram": sanitize_link(row.get('Instagram Link', '')),
+                    "linkedin": sanitize_link(row.get('LinkedIn Link', '')),
+                    # "photoUrl": "", #sanitize_link(row.get('Profile Pic', '')),      doing manual link upload via cloudinary
+                    "position": clean_value(row.get('Position', '')),
+                    "rollNo": roll_no
+                }
+
+                batch.set(person_ref, doc_data, merge = True)
                 batch_count += 1
-            
-            person_ref = db.collection('members').document(domain_id).collection('persons').document(roll_no)
-            
-            doc_data = {
-                "name": name,
-                "github": sanitize_link(row.get('Github Link', '')),
-                "instagram": sanitize_link(row.get('Instagram Link', '')),
-                "linkedin": sanitize_link(row.get('LinkedIn Link', '')),
-                "photoUrl": sanitize_link(row.get('Profile Pic', '')),
-                "position": clean_value(row.get('Position', '')),
-                "rollNo": roll_no
-            }
-            
-            batch.set(person_ref, doc_data)
             batch_count += 1
             
             if batch_count >= 400:  # Firestore batch limit is 500
