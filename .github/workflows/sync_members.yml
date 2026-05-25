@@ -1,0 +1,34 @@
+name: Sync Members to Vercel Blob
+
+# for updating member details, first download the excel, then run the script to update db, then run this workflow via giithub manually
+
+on:
+  workflow_dispatch:
+  # schedule:
+    # - cron: '0 0 * * *' # Run daily at midnight UTC
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          
+      - name: Install Dependencies
+        run: |
+          pip install firebase-admin python-dotenv
+          
+      - name: Run Members Sync Script
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
+          EDGE_CONFIG_ID: ${{ secrets.EDGE_CONFIG_ID }}
+        run: |
+          python ../../scripts/sync_members_vercel.py

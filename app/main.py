@@ -519,6 +519,27 @@ async def get_user_rank(
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/members/cached")
+async def get_cached_members():
+    """
+    Fetches the members data from Vercel Edge Config (Discovery) -> Vercel Blob.
+    This matches the leaderboard caching mechanism.
+    """
+    from crud import get_edge_leaderboard
+    blob_url = get_edge_leaderboard("members_blob_url")
+    
+    if blob_url and not isinstance(blob_url, list):
+        import urllib.request
+        import json
+        
+        cached_data = fetch_json_from_url(blob_url)
+        if cached_data:
+            return cached_data
+            
+    # Fallback if no cache or Edge Config fails
+    from crud_members import fetch_all_members_from_db
+    return fetch_all_members_from_db()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
