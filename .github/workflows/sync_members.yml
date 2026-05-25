@@ -23,7 +23,7 @@ jobs:
           
       - name: Install Dependencies
         run: |
-          pip install firebase-admin python-dotenv
+          pip install firebase-admin python-dotenv pandas
           
       - name: Run Members Sync Script
         env:
