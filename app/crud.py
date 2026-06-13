@@ -238,12 +238,14 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
         participant_ref = score_date_ref.collection("participants").document(roll_no)
         is_new_user = roll_no not in all_roll_nos
         past_absences = len(all_past_dates) if is_new_user else 0
+        is_present = points > 0
+        
         user_update_data = {
             "rollNo": roll_no,
             "totalPoints": firestore.Increment(points),
             "attendanceSummary": {
-                "daysPresent": firestore.Increment(1),
-                "daysAbsent": firestore.Increment(past_absences)
+                "daysPresent": firestore.Increment(1 if is_present else 0),
+                "daysAbsent": firestore.Increment(past_absences + (0 if is_present else 1))
             }
         }
         if name: user_update_data["name"] = name
@@ -252,7 +254,9 @@ def update_bulk_scores_atomic(scores_data: List[dict], score_date: str, admin_em
             for past_date in all_past_dates:
                 past_participant_ref = db.collection(get_coll_path("scores", season, level)).document(past_date).collection("participants").document(roll_no)
                 batch.set(past_participant_ref, {"rollNo": roll_no, "points": 0, "status": "absent", "attendance": False})
-        batch.set(participant_ref, {"rollNo": roll_no, "points": points, "status": "present", "attendance": True})
+                
+        status = "present" if is_present else "absent"
+        batch.set(participant_ref, {"rollNo": roll_no, "points": points, "status": status, "attendance": is_present})
 
     for roll_no in missing_roll_nos:
         batch.set(users_ref.document(roll_no), {"attendanceSummary": {"daysAbsent": firestore.Increment(1)}}, merge=True)
